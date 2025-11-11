@@ -1,9 +1,8 @@
-# FastAPI and Server
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
 python-multipart==0.0.6
 
-# LangChain and AI
+# LangChain
 langchain==0.2.14
 langchain-google-genai==1.0.7
 langchain-core==0.2.32
@@ -11,7 +10,7 @@ langchain-huggingface==0.0.3
 langchain-text-splitters==0.2.2
 langchain-groq==0.1.5
 
-# Vector Stores
+# Vector stores
 pinecone==5.4.2
 pinecone-plugin-inference==3.1.0
 pinecone-plugin-interface==0.0.7
@@ -21,13 +20,9 @@ chromadb==0.4.18
 sentence-transformers==2.7.0
 sentencepiece==0.2.1
 
-# Environment and Utils
+# Utils
 python-dotenv==1.0.0
-pydantic==1.10.15
-pydantic-settings==2.1.0
 requests==2.32.0
 beautifulsoup4==4.12.2
 watchdog==3.0.0
-
-# Optional
 groq==0.33.0
