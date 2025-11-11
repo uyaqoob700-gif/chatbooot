@@ -20,6 +20,8 @@ chromadb==0.4.18
 sentence-transformers==2.7.0
 sentencepiece==0.2.1
 
+langchain-community==0.2.4
+
 # Utils
 python-dotenv==1.0.0
 requests==2.32.0
