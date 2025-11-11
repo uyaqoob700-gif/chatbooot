@@ -22,7 +22,7 @@ pydantic-settings==2.1.0
 
 # Optional (if you need Groq later)
 groq==0.4.1
-langchain-groq==0.0.1# Up
+langchain-groq==0.0.1
 date Management Dependencies
 watchdog==3.0.0
 beautifulsoup4==4.12.2
