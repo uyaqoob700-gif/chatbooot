@@ -4,26 +4,30 @@ uvicorn[standard]==0.24.0
 python-multipart==0.0.6
 
 # LangChain and AI
-langchain==0.1.0
-langchain-google-genai==0.0.6
-langchain-core==0.1.10
+langchain==0.2.14
+langchain-google-genai==1.0.7
+langchain-core==0.2.32
+langchain-huggingface==0.0.3
+langchain-text-splitters==0.2.2
+langchain-groq==0.1.5
 
 # Vector Stores
-pinecone-client==3.0.0
+pinecone==5.4.2
+pinecone-plugin-inference==3.1.0
+pinecone-plugin-interface==0.0.7
 chromadb==0.4.18
 
 # Embeddings
-sentence-transformers==2.2.2
+sentence-transformers==2.7.0
+sentencepiece==0.2.1
 
 # Environment and Utils
 python-dotenv==1.0.0
-pydantic==2.5.0
+pydantic==1.10.15
 pydantic-settings==2.1.0
-
-# Optional (if you need Groq later)
-groq==0.4.1
-langchain-groq==0.0.1
-#update Management Dependencies
-watchdog==3.0.0
+requests==2.32.0
 beautifulsoup4==4.12.2
-requests==2.31.0
+watchdog==3.0.0
+
+# Optional
+groq==0.33.0
