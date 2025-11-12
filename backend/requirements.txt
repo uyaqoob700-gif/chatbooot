@@ -1,15 +1,16 @@
+# FastAPI
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
 python-multipart==0.0.6
 
-# LangChain
+# LangChain ecosystem
 langchain==0.2.14
 langchain-groq==0.1.5
-langchain-huggingface==0.0.10  # Add this
+langchain-huggingface==1.0.1
 langchain-community==0.2.4
 
 # Vector stores
-pinecone==5.4.2
+pinecone-client==3.2.2
 chromadb==0.4.18
 
 # Embeddings
@@ -17,12 +18,21 @@ sentence-transformers==2.7.0
 sentencepiece==0.2.1
 transformers==4.37.2
 
-# CPU-only torch
-torch==2.5.1+cpu --extra-index-url https://download.pytorch.org/whl/cpu
+# Torch (CPU only - Render compatible)
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.5.1+cpu
+torchvision==0.20.1+cpu
+torchaudio==2.5.1+cpu
 
-# Utils
+# Utilities
 python-dotenv==1.0.0
 requests==2.32.0
 beautifulsoup4==4.12.2
 watchdog==3.0.0
 groq==0.33.0
+
+# Additional dependencies that might be needed
+pydantic==2.5.0
+pydantic-settings==2.1.0
+httpx==0.25.2
+typing-extensions==4.9.0
