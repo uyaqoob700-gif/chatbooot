@@ -1,13 +1,8 @@
-# ---------------------------
-# FastAPI and Server
-# ---------------------------
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
 python-multipart==0.0.6
 
-# ---------------------------
 # LangChain
-# ---------------------------
 langchain==0.2.14
 langchain-google-genai==1.0.7
 langchain-core==0.2.32
@@ -15,26 +10,22 @@ langchain-text-splitters==0.2.2
 langchain-groq==0.1.5
 langchain-community==0.2.4
 
-# ---------------------------
-# Vector Stores
-# ---------------------------
+# Vector stores
 pinecone==5.4.2
 pinecone-plugin-inference==3.1.0
 pinecone-plugin-interface==0.0.7
 chromadb==0.4.18
 
-# ---------------------------
-# Embeddings / Transformers (CPU-only)
-# ---------------------------
-# Install CPU-only torch first to avoid GPU/CUDA downloads
-torch==2.2.0+cpu --index-url https://download.pytorch.org/whl/cpu
-transformers==4.57.1
+# Embeddings
 sentence-transformers==2.7.0
 sentencepiece==0.2.1
+transformers==4.37.2
 
-# ---------------------------
-# Utilities
-# ---------------------------
+# CPU-only torch (no CUDA!)
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.2.0+cpu
+
+# Utils
 python-dotenv==1.0.0
 requests==2.32.0
 beautifulsoup4==4.12.2
