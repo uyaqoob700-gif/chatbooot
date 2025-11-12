@@ -3,32 +3,28 @@ fastapi==0.104.1
 uvicorn[standard]==0.24.0
 python-multipart==0.0.6
 
-# LangChain ecosystem
+# LangChain ecosystem (version 0.2.x compatible)
 langchain==0.2.14
 langchain-groq==0.1.5
-langchain-huggingface==1.0.1
 langchain-community==0.2.4
+# Use older version compatible with langchain 0.2.x
+langchain-huggingface==0.0.3
 
-# Vector stores
+# Vector store
 pinecone-client==3.2.2
-chromadb==0.4.18
 
-# Embeddings
+# Embeddings (HuggingFace)
 sentence-transformers==2.7.0
-sentencepiece==0.2.1
 transformers==4.37.2
 
-# Torch (CPU only - Render compatible)
+# Torch CPU-only (for sentence-transformers)
 --extra-index-url https://download.pytorch.org/whl/cpu
 torch==2.5.1+cpu
 
 # Utilities
 python-dotenv==1.0.0
 requests==2.32.0
-beautifulsoup4==4.12.2
-watchdog==3.0.0
 groq==0.33.0
 
-# Let pip auto-resolve these dependencies
+# Additional dependencies
 pydantic>=2.5.0
-httpx>=0.25.0
