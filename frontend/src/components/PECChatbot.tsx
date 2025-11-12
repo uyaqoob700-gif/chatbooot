@@ -53,7 +53,7 @@ export default function PECChatbot() {
       const formData = new FormData();
       formData.append("question", currentInput);
 
-      const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? 'http://127.0.0.1:8000';
+      const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? 'https://chatbooot-9g2b.onrender.com';
       const response = await fetch(`${apiBaseUrl}/ask/`, {
         method: "POST",
         body: formData,
