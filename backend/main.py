@@ -12,6 +12,8 @@ import logging
 import json
 from datetime import datetime
 from pathlib import Path
+from modules.optimized_llm import get_optimized_llm_chain
+from modules.optimized_query_handlers import query_optimized_chain
 from modules.intent_router import classify_query_with_groq
 
 # Setup logging
