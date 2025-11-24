@@ -1,268 +1,322 @@
-from langchain.chains import RetrievalQA
-from langchain_core.documents import Document
-from typing import Dict, Any, List
+"""
+Advanced query handler with hybrid search, reranking, and answer validation
+"""
+
 import logging
+from typing import List, Dict, Any
 import re
-from pinecone import Pinecone
-import os
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
 
-def expand_query_for_retrieval(question: str) -> List[str]:
-    """Expand query with related terms for better retrieval."""
+def extract_keywords(query: str) -> List[str]:
+    """
+    Extract important keywords from query for hybrid search.
+    """
+    # PEC-specific important terms
+    important_terms = [
+        "registration", "license", "fee", "requirement", "document",
+        "eligibility", "cpd", "professional", "engineer", "firm",
+        "project", "approval", "application", "certificate", "renewal"
+    ]
     
-    # PEC-specific query expansion
-    expansion_map = {
-        'registration': ['registration', 'register', 'enrollment', 'enroll', 'apply', 'application'],
-        'engineer': ['engineer', 'engineering', 'professional engineer', 'pe', 'registered engineer', 're'],
-        'firm': ['firm', 'company', 'consultant', 'contractor', 'organization', 'enterprise'],
-        'examination': ['examination', 'exam', 'test', 'epe', 'engineering practice examination', 'assessment'],
-        'cpd': ['cpd', 'continuing professional development', 'training', 'course', 'education', 'learning'],
-        'fee': ['fee', 'fees', 'payment', 'cost', 'charge', 'amount'],
-        'renewal': ['renewal', 'renew', 'expiry', 'expire', 'validity', 'valid'],
-        'regulation': ['regulation', 'regulations', 'act', 'rule', 'rules', 'policy', 'policies'],
-        'requirement': ['requirement', 'requirements', 'criteria', 'condition', 'prerequisite'],
-        'document': ['document', 'documents', 'paper', 'certificate', 'license', 'permit'],
-        'procedure': ['procedure', 'procedures', 'process', 'steps', 'method', 'way']
-    }
+    words = query.lower().split()
+    keywords = [w for w in words if w in important_terms or len(w) > 4]
     
-    expanded_queries = [question]
-    question_lower = question.lower()
-    
-    # Add related terms
-    for key, terms in expansion_map.items():
-        if key in question_lower:
-            for term in terms:
-                if term not in question_lower:
-                    expanded_queries.append(f"{question} {term}")
-    
-    # Add year-based queries if year is mentioned
-    year_match = re.search(r'\b(20\d{2})\b', question)
-    if year_match:
-        year = year_match.group(1)
-        expanded_queries.append(f"{question} {year}")
-    
-    return expanded_queries[:3]  # Limit to 3 expanded queries
+    return keywords[:5]  # Top 5 keywords
 
 
-def hybrid_search_pinecone(question: str, embed_model, index, top_k: int = 10) -> List[Document]:
-    """Perform hybrid search combining multiple strategies."""
+def hybrid_search(query: str, embed_model, index, top_k=10) -> List[Dict]:
+    """
+    Perform hybrid search combining semantic and keyword search.
     
-    # Expand query
-    expanded_queries = expand_query_for_retrieval(question)
+    Args:
+        query: User query
+        embed_model: HuggingFace embeddings model
+        index: Pinecone index
+        top_k: Number of results to retrieve
     
-    all_results = []
-    seen_ids = set()
-    
-    for query in expanded_queries:
-        try:
-            # Generate embedding for this query
-            query_embedding = embed_model.embed_query(query)
-            
-            # Search Pinecone
-            search_results = index.query(
-                vector=query_embedding,
-                top_k=top_k,
-                include_metadata=True,
-                filter={}  # No filter for now, can add document_type filter later
-            )
-            
-            # Process results
-            for match in search_results.matches:
-                if match.id not in seen_ids:
-                    doc = Document(
-                        page_content=match.metadata.get('text', ''),
-                        metadata={
-                            'source_file': match.metadata.get('source_file', 'unknown'),
-                            'score': match.score,
-                            'chunk_index': match.metadata.get('chunk_index', 0),
-                            'document_type': match.metadata.get('document_type', 'general'),
-                            'key_terms': match.metadata.get('key_terms', []),
-                            'query_used': query
-                        }
-                    )
-                    all_results.append(doc)
-                    seen_ids.add(match.id)
-                    
-        except Exception as e:
-            logger.warning(f"Error in hybrid search for query '{query}': {e}")
-            continue
-    
-    # Sort by score and return top results
-    all_results.sort(key=lambda x: x.metadata['score'], reverse=True)
-    return all_results[:top_k]
-
-
-def rerank_documents(documents: List[Document], question: str) -> List[Document]:
-    """Rerank documents based on relevance to the question."""
-    
-    question_lower = question.lower()
-    question_words = set(re.findall(r'\b\w+\b', question_lower))
-    
-    scored_docs = []
-    
-    for doc in documents:
-        content_lower = doc.page_content.lower()
-        content_words = set(re.findall(r'\b\w+\b', content_lower))
+    Returns:
+        List of retrieved documents with scores
+    """
+    try:
+        # 1. Semantic search using embeddings
+        query_embedding = embed_model.embed_query(query)
         
-        # Calculate relevance score
-        word_overlap = len(question_words.intersection(content_words))
-        word_overlap_ratio = word_overlap / len(question_words) if question_words else 0
+        # 2. Extract keywords for metadata filtering
+        keywords = extract_keywords(query)
         
-        # Boost score for PEC-specific terms
-        pec_terms = ['pec', 'pakistan engineering council', 'engineering', 'professional', 'registration']
-        pec_boost = sum(1 for term in pec_terms if term in content_lower)
-        
-        # Boost score for document type relevance
-        doc_type_boost = 0
-        if 'registration' in question_lower and doc.metadata.get('document_type') == 'procedure':
-            doc_type_boost = 0.2
-        elif 'examination' in question_lower and doc.metadata.get('document_type') == 'examination':
-            doc_type_boost = 0.2
-        elif 'cpd' in question_lower and doc.metadata.get('document_type') == 'cpd':
-            doc_type_boost = 0.2
-        
-        # Combined score
-        relevance_score = (
-            doc.metadata.get('score', 0) * 0.4 +  # Original similarity score
-            word_overlap_ratio * 0.3 +            # Word overlap
-            pec_boost * 0.1 +                     # PEC term boost
-            doc_type_boost                         # Document type boost
+        # 3. Search with both semantic similarity and keyword boost
+        results = index.query(
+            vector=query_embedding,
+            top_k=top_k,
+            include_metadata=True
         )
         
-        doc.metadata['relevance_score'] = relevance_score
-        scored_docs.append(doc)
-    
-    # Sort by relevance score
-    scored_docs.sort(key=lambda x: x.metadata['relevance_score'], reverse=True)
-    return scored_docs
+        # 4. Boost scores for keyword matches in metadata
+        enhanced_results = []
+        for match in results.matches:
+            score = match.score
+            text = match.metadata.get('text', '').lower()
+            
+            # Boost score if keywords are found
+            keyword_boost = sum(1 for kw in keywords if kw in text) * 0.1
+            enhanced_score = min(score + keyword_boost, 1.0)
+            
+            enhanced_results.append({
+                'id': match.id,
+                'score': enhanced_score,
+                'text': match.metadata.get('text', ''),
+                'source': match.metadata.get('source', 'Unknown'),
+                'page': match.metadata.get('page', 'N/A'),
+            })
+        
+        # Sort by enhanced score
+        enhanced_results.sort(key=lambda x: x['score'], reverse=True)
+        
+        logger.info(f"Hybrid search retrieved {len(enhanced_results)} documents")
+        return enhanced_results
+        
+    except Exception as e:
+        logger.error(f"Hybrid search error: {e}")
+        return []
 
 
-def query_optimized_chain(chain: RetrievalQA, question: str, embed_model, index) -> Dict[str, Any]:
+def rerank_results(query: str, results: List[Dict], top_k=3) -> List[Dict]:
     """
-    Query the optimized RAG chain with hybrid search and reranking.
+    Rerank results using simple but effective heuristics.
+    
+    Args:
+        query: User query
+        results: Retrieved documents
+        top_k: Number of top results to return
+    
+    Returns:
+        Reranked list of documents
     """
     try:
-        logger.info(f"Querying optimized chain with question: {question}")
+        query_lower = query.lower()
+        query_words = set(query_lower.split())
         
-        # Perform hybrid search
-        retrieved_docs = hybrid_search_pinecone(question, embed_model, index, top_k=15)
+        for result in results:
+            text_lower = result['text'].lower()
+            text_words = set(text_lower.split())
+            
+            # Calculate additional relevance signals
+            
+            # 1. Exact phrase match
+            exact_match_bonus = 0.2 if query_lower in text_lower else 0
+            
+            # 2. Word overlap (Jaccard similarity)
+            overlap = len(query_words & text_words) / len(query_words | text_words)
+            
+            # 3. Position of query terms (earlier is better)
+            position_bonus = 0
+            for word in query_words:
+                if word in text_lower:
+                    pos = text_lower.index(word)
+                    position_bonus += (1 - pos / len(text_lower)) * 0.1
+            
+            # 4. Document completeness (prefer longer, more detailed docs)
+            completeness_bonus = min(len(result['text']) / 1000, 0.1)
+            
+            # Combined rerank score
+            rerank_score = (
+                result['score'] * 0.5 +  # Original semantic score
+                exact_match_bonus +
+                overlap * 0.2 +
+                position_bonus +
+                completeness_bonus
+            )
+            
+            result['rerank_score'] = rerank_score
+        
+        # Sort by rerank score
+        results.sort(key=lambda x: x['rerank_score'], reverse=True)
+        
+        logger.info(f"Reranked to top {top_k} results")
+        return results[:top_k]
+        
+    except Exception as e:
+        logger.error(f"Reranking error: {e}")
+        return results[:top_k]
+
+
+def detect_answer_issues(answer: str, context: str, query: str) -> Dict[str, Any]:
+    """
+    Detect potential issues in generated answer.
+    
+    Returns:
+        Dictionary with issue flags and confidence score
+    """
+    issues = []
+    confidence = 1.0
+    
+    # 1. Check for hedge words indicating uncertainty
+    hedge_words = ["might", "maybe", "possibly", "perhaps", "unclear", 
+                   "not sure", "cannot confirm", "unable to find"]
+    if any(word in answer.lower() for word in hedge_words):
+        issues.append("Contains uncertainty indicators")
+        confidence -= 0.2
+    
+    # 2. Check if answer is too short (likely incomplete)
+    if len(answer.split()) < 20:
+        issues.append("Answer may be too brief")
+        confidence -= 0.1
+    
+    # 3. Check for generic responses
+    generic_phrases = ["contact pec", "refer to official", "check the website"]
+    if any(phrase in answer.lower() for phrase in generic_phrases):
+        issues.append("Generic redirect response")
+        confidence -= 0.15
+    
+    # 4. Check if key terms from query are addressed
+    query_terms = set(query.lower().split())
+    important_terms = [t for t in query_terms if len(t) > 4]
+    addressed_terms = sum(1 for term in important_terms if term in answer.lower())
+    
+    if important_terms and addressed_terms / len(important_terms) < 0.5:
+        issues.append("May not fully address the question")
+        confidence -= 0.2
+    
+    # 5. Check for potential hallucination markers
+    unsupported_claims = ["it is known that", "studies show", "experts say"]
+    if any(claim in answer.lower() for claim in unsupported_claims):
+        issues.append("Contains potentially unsupported claims")
+        confidence -= 0.3
+    
+    confidence = max(confidence, 0.0)
+    
+    return {
+        "has_issues": len(issues) > 0,
+        "issues": issues,
+        "confidence": confidence
+    }
+
+
+def format_sources(results: List[Dict]) -> List[Dict]:
+    """
+    Format source information for display.
+    """
+    sources = []
+    for i, result in enumerate(results, 1):
+        sources.append({
+            "index": i,
+            "content": result['text'][:200] + "..." if len(result['text']) > 200 else result['text'],
+            "score": round(result.get('rerank_score', result['score']), 3),
+            "metadata": {
+                "source": result['source'],
+                "page": result['page']
+            }
+        })
+    return sources
+
+
+def query_optimized_chain(chain, question: str, embed_model, index) -> Dict[str, Any]:
+    """
+    Execute optimized query with hybrid search, reranking, and validation.
+    
+    Args:
+        chain: LangChain RAG chain
+        question: User question
+        embed_model: Embedding model
+        index: Pinecone index
+    
+    Returns:
+        Dictionary with answer, sources, and metadata
+    """
+    try:
+        logger.info(f"Processing optimized query: {question}")
+        
+        # Step 1: Preprocess query
+        from modules.optimized_llm import preprocess_query
+        enhanced_query = preprocess_query(question)
+        logger.info(f"Enhanced query: {enhanced_query}")
+        
+        # Step 2: Hybrid search
+        retrieved_docs = hybrid_search(
+            enhanced_query,
+            embed_model,
+            index,
+            top_k=10
+        )
         
         if not retrieved_docs:
-            logger.warning("No relevant documents found in hybrid search")
             return {
-                "answer": "I couldn't find any relevant information in the uploaded PEC documents to answer your question. Please make sure documents have been uploaded and try rephrasing your question.",
+                "answer": "I couldn't find relevant information in my knowledge base. Please try rephrasing your question or contact PEC directly for assistance.",
                 "sources": [],
                 "source_count": 0,
-                "search_method": "hybrid_search"
+                "confidence": 0.0
             }
         
-        # Rerank documents
-        reranked_docs = rerank_documents(retrieved_docs, question)
+        # Step 3: Rerank results
+        reranked_docs = rerank_results(enhanced_query, retrieved_docs, top_k=3)
         
-        # Use top 5 documents for context (reduced from 8 for more focused responses)
-        top_docs = reranked_docs[:5]
+        # Step 4: Prepare context for LLM
+        context = "\n\n".join([
+            f"[Source: {doc['source']}, Page: {doc['page']}]\n{doc['text']}"
+            for doc in reranked_docs
+        ])
         
-        # Create a custom retriever with the top documents
-        from langchain_core.retrievers import BaseRetriever
+        # Step 5: Generate answer using the chain
+        # Create a simple retriever wrapper
         from langchain_core.documents import Document
-        from typing import List
         
-        class SimpleRetriever(BaseRetriever):
-            """Custom retriever that returns pre-fetched documents."""
-            documents: List[Document] = []
-            
-            def _get_relevant_documents(self, query: str) -> List[Document]:
-                """Return the stored documents."""
-                return self.documents
-            
-            async def _aget_relevant_documents(self, query: str) -> List[Document]:
-                """Async version of get_relevant_documents."""
-                return self.documents
-        custom_retriever = SimpleRetriever(documents=top_docs)
+        docs_for_chain = [
+            Document(
+                page_content=doc['text'],
+                metadata={'source': doc['source'], 'page': doc['page']}
+            )
+            for doc in reranked_docs
+        ]
         
-        # Update the chain's retriever temporarily
-        original_retriever = chain.retriever
-        chain.retriever = custom_retriever
+        # Update the retriever's documents
+        chain.steps[0]['context'].steps[0].documents = docs_for_chain
         
-        try:
-            # Query the chain
-            response = chain({"query": question})
-            
-            # Extract answer
-            answer = response.get("result", "")
-            
-            # Extract and format sources
-            sources = []
-            source_docs = response.get("source_documents", [])
-            
-            for i, doc in enumerate(source_docs[:5]):  # Show top 5 sources
-                source_info = {
-                    "index": i + 1,
-                    "content": doc.page_content[:400] + "..." if len(doc.page_content) > 400 else doc.page_content,
-                    "metadata": {
-                        'source_file': doc.metadata.get('source_file', 'unknown'),
-                        'relevance_score': doc.metadata.get('relevance_score', 0),
-                        'document_type': doc.metadata.get('document_type', 'general'),
-                        'chunk_index': doc.metadata.get('chunk_index', 0)
-                    }
-                }
-                sources.append(source_info)
-            
-            logger.info(f"Successfully generated optimized answer with {len(source_docs)} sources")
-            
-            return {
-                "answer": answer,
-                "sources": sources,
-                "source_count": len(source_docs),
-                "search_method": "hybrid_search_with_reranking",
-                "total_documents_searched": len(retrieved_docs)
-            }
-            
-        finally:
-            # Restore original retriever
-            chain.retriever = original_retriever
+        # Invoke the chain
+        answer = chain.invoke(enhanced_query)
         
-    except Exception as e:
-        logger.error(f"Error in optimized query: {e}")
-        raise
-
-
-def query_standard_chain(chain: RetrievalQA, question: str) -> Dict[str, Any]:
-    """
-    Standard query handler (fallback).
-    """
-    try:
-        logger.info(f"Querying standard chain with question: {question}")
+        # Step 6: Validate and check answer quality
+        from modules.optimized_llm import RAG_CONFIG
         
-        # Query the chain
-        response = chain({"query": question})
+        quality_check = detect_answer_issues(answer, context, question)
         
-        # Extract answer
-        answer = response.get("result", "")
+        # Step 7: Enhance formatting
+        from modules.optimized_llm import enhance_answer_with_formatting
+        answer = enhance_answer_with_formatting(answer)
         
-        # Extract and format sources
-        sources = []
-        source_docs = response.get("source_documents", [])
+        # Step 8: Optional validation (if enabled)
+        validation_result = None
+        if RAG_CONFIG.get('enable_validation', False) and quality_check['confidence'] < 0.7:
+            from modules.optimized_llm import validate_answer
+            validation_result = validate_answer(question, context, answer)
+            logger.info(f"Validation result: {validation_result}")
         
-        for i, doc in enumerate(source_docs[:3]):  # Limit to top 3 sources
-            source_info = {
-                "index": i + 1,
-                "content": doc.page_content[:300] + "..." if len(doc.page_content) > 300 else doc.page_content,
-                "metadata": doc.metadata
-            }
-            sources.append(source_info)
-        
-        logger.info(f"Successfully generated standard answer with {len(source_docs)} sources")
-        
-        return {
+        # Step 9: Format response
+        response = {
             "answer": answer,
-            "sources": sources,
-            "source_count": len(source_docs),
-            "search_method": "standard_search"
+            "sources": format_sources(reranked_docs),
+            "source_count": len(reranked_docs),
+            "confidence": quality_check['confidence'],
+            "quality_issues": quality_check['issues'] if quality_check['has_issues'] else [],
+            "timestamp": datetime.now().isoformat()
         }
         
+        # Add validation info if performed
+        if validation_result:
+            response["validation"] = validation_result
+        
+        logger.info(f"Query completed with confidence: {quality_check['confidence']}")
+        
+        return response
+        
     except Exception as e:
-        logger.error(f"Error querying standard chain: {e}")
-        raise
+        logger.exception(f"Error in optimized query processing: {e}")
+        return {
+            "answer": f"An error occurred while processing your question. Please try again or rephrase your question.",
+            "sources": [],
+            "source_count": 0,
+            "confidence": 0.0,
+            "error": str(e)
+        }
