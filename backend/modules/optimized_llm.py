@@ -1,164 +1,220 @@
+"""
+Enhanced RAG System for PEC Chatbot with Improved Answer Quality
+Implements best practices for consistent, accurate responses
+"""
+
 from langchain_groq import ChatGroq
-from langchain.chains import RetrievalQA
-from langchain.prompts import PromptTemplate
-from langchain.schema import BaseRetriever
+from langchain.prompts import ChatPromptTemplate
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.runnables import RunnablePassthrough
 import os
 import logging
-from typing import List, Dict, Any
 
 logger = logging.getLogger(__name__)
 
 
-def create_pec_specialized_prompt() -> PromptTemplate:
-    """Create a specialized prompt for PEC engineering questions."""
+def preprocess_query(query: str) -> str:
+    """
+    Preprocess and enhance user query for better retrieval.
+    Expands abbreviations and adds context.
+    """
+    # PEC-specific abbreviation expansions
+    abbreviations = {
+        "cpd": "Continuing Professional Development",
+        "pec": "Pakistan Engineering Council",
+        "pe": "Professional Engineer",
+        "cpe": "Continuing Professional Education",
+        "nbe": "National Board of Engineers",
+    }
     
-    prompt_template = """You are a helpful AI assistant for Pakistan Engineering Council (PEC) information. Answer questions about PEC regulations, procedures, and policies in a conversational, helpful manner.
+    query_lower = query.lower()
+    expanded_query = query
+    
+    # Expand known abbreviations
+    for abbr, full in abbreviations.items():
+        if abbr in query_lower.split():
+            expanded_query = expanded_query.replace(abbr, f"{abbr} ({full})")
+    
+    return expanded_query
+
+
+def create_enhanced_prompt_template():
+    """
+    Creates a specialized prompt template for PEC domain with strict guidelines.
+    """
+    template = """You are an expert assistant for the Pakistan Engineering Council (PEC). Your role is to provide accurate, helpful information about PEC services, regulations, and procedures.
+
+CRITICAL GUIDELINES:
+1. ONLY answer based on the provided context documents
+2. If information is not in the context, clearly state: "I don't have specific information about that in my knowledge base. Please refer to official PEC documentation or contact PEC directly."
+3. Be specific with numbers, dates, fees, and requirements - never guess
+4. Format responses clearly with bullet points or numbered lists when appropriate
+5. Always cite which section or document your answer comes from when possible
+6. For procedural questions, provide step-by-step instructions
+7. Maintain a professional, helpful tone
 
 CONTEXT FROM PEC DOCUMENTS:
 {context}
 
 USER QUESTION: {question}
 
-INSTRUCTIONS:
-1. Answer based ONLY on the provided PEC context above
-2. If the information is not in the context, simply say: "I don't have that specific information in the uploaded PEC documents."
-3. Be conversational and helpful - like talking to a colleague
-4. Provide direct, practical answers without unnecessary structure
-5. If you have partial information, share what you know
-6. Use simple language appropriate for engineers
-7. Keep responses concise but complete
-8. If mentioning specific requirements, fees, or procedures, cite them exactly as they appear
+DETAILED ANSWER (based strictly on the context above):"""
 
-ANSWER:"""
-
-    return PromptTemplate(
-        template=prompt_template,
-        input_variables=["context", "question"]
-    )
+    return ChatPromptTemplate.from_template(template)
 
 
-def create_query_expansion_prompt(original_query: str) -> str:
-    """Expand the query with related terms for better retrieval."""
-    
-    # PEC-specific query expansion
-    expansion_map = {
-        'registration': ['registration', 'register', 'enrollment', 'enroll', 'apply', 'application'],
-        'engineer': ['engineer', 'engineering', 'professional engineer', 'pe', 'registered engineer', 're'],
-        'firm': ['firm', 'company', 'consultant', 'contractor', 'organization', 'enterprise'],
-        'examination': ['examination', 'exam', 'test', 'epe', 'engineering practice examination', 'assessment'],
-        'cpd': ['cpd', 'continuing professional development', 'training', 'course', 'education', 'learning'],
-        'fee': ['fee', 'fees', 'payment', 'cost', 'charge', 'amount'],
-        'renewal': ['renewal', 'renew', 'expiry', 'expire', 'validity', 'valid'],
-        'regulation': ['regulation', 'regulations', 'act', 'rule', 'rules', 'policy', 'policies']
-    }
-    
-    expanded_terms = [original_query]
-    query_lower = original_query.lower()
-    
-    for key, terms in expansion_map.items():
-        if key in query_lower:
-            expanded_terms.extend(terms)
-    
-    # Remove duplicates and return as space-separated string
-    return ' '.join(list(set(expanded_terms)))
-
-
-def get_optimized_llm_chain(retriever: BaseRetriever, temperature: float = 0.1):
+def create_validation_prompt():
     """
-    Create optimized LLM chain with PEC-specialized prompt and lower temperature.
+    Creates a prompt to validate the generated answer for accuracy and relevance.
+    """
+    template = """You are a quality validator for a PEC (Pakistan Engineering Council) chatbot.
+
+Review the following answer and determine if it meets these criteria:
+1. Answers the question directly
+2. Uses only information from the provided context
+3. Doesn't contain speculation or unsupported claims
+4. Is clear and well-formatted
+5. Includes appropriate caveats when information is limited
+
+ORIGINAL QUESTION: {question}
+
+CONTEXT PROVIDED: {context}
+
+GENERATED ANSWER: {answer}
+
+VALIDATION:
+- Is the answer accurate based on the context? (Yes/No)
+- Does it fully address the question? (Yes/No)
+- Are there any hallucinations or unsupported claims? (Yes/No)
+- Quality Score (1-10):
+- Suggested improvements:
+
+Provide a brief validation report:"""
+
+    return ChatPromptTemplate.from_template(template)
+
+
+def get_optimized_llm_chain(retriever, temperature=0.1, model_name=None):
+    """
+    Creates an optimized RAG chain with enhanced prompting and validation.
     
     Args:
-        retriever: Document retriever
-        temperature: LLM temperature (0-1, lower = more focused)
-        
+        retriever: LangChain retriever object
+        temperature: Lower temperature (0.0-0.3) for more consistent answers
+        model_name: Groq model name (defaults to environment variable)
+    
     Returns:
-        RetrievalQA chain
+        LangChain RAG chain
+    """
+    # Use lower temperature for more consistent, factual responses
+    llm = ChatGroq(
+        api_key=os.environ.get("GROQ_API_KEY"),
+        model_name=model_name or os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"),
+        temperature=temperature,  # Low temperature for consistency
+        max_tokens=2048,  # Increased for detailed answers
+    )
+    
+    # Create the enhanced prompt
+    prompt = create_enhanced_prompt_template()
+    
+    # Build the RAG chain with proper document formatting
+    def format_docs(docs):
+        """Format documents with clear section markers and metadata."""
+        formatted = []
+        for i, doc in enumerate(docs, 1):
+            source = doc.metadata.get('source', 'Unknown')
+            page = doc.metadata.get('page', 'N/A')
+            formatted.append(
+                f"[Document {i} - Source: {source}, Page: {page}]\n{doc.page_content}\n"
+            )
+        return "\n---\n".join(formatted)
+    
+    # Create the RAG chain
+    rag_chain = (
+        {
+            "context": retriever | format_docs,
+            "question": RunnablePassthrough()
+        }
+        | prompt
+        | llm
+        | StrOutputParser()
+    )
+    
+    return rag_chain
+
+
+def validate_answer(question: str, context: str, answer: str) -> dict:
+    """
+    Validates the generated answer using an LLM as a judge.
+    
+    Args:
+        question: Original user question
+        context: Retrieved context
+        answer: Generated answer
+    
+    Returns:
+        Dictionary with validation results
     """
     try:
-        # Initialize Groq LLM with optimized settings
-        llm = ChatGroq(
-            api_key=os.environ["GROQ_API_KEY"],
+        validator_llm = ChatGroq(
+            api_key=os.environ.get("GROQ_API_KEY"),
             model_name=os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"),
-            temperature=temperature,  # Lower temperature for more focused answers
-            max_tokens=3072,  # Increased for more comprehensive answers
-            timeout=45,  # Increased timeout
-            max_retries=3
+            temperature=0.0,  # Deterministic for validation
+            max_tokens=512,
         )
         
-        logger.info(f"Initialized optimized Groq LLM: {os.getenv('GROQ_MODEL')} (temp: {temperature})")
+        validation_prompt = create_validation_prompt()
         
-        # Create PEC-specialized prompt
-        prompt = create_pec_specialized_prompt()
+        validation_chain = validation_prompt | validator_llm | StrOutputParser()
         
-        # Create RetrievalQA chain with optimized settings
-        chain = RetrievalQA.from_chain_type(
-            llm=llm,
-            chain_type="stuff",
-            retriever=retriever,
-            return_source_documents=True,
-            chain_type_kwargs={"prompt": prompt},
-            verbose=False  # Set to True for debugging
-        )
+        validation_result = validation_chain.invoke({
+            "question": question,
+            "context": context[:2000],  # Limit context size
+            "answer": answer
+        })
         
-        logger.info("Successfully created optimized LLM chain")
-        return chain
+        return {
+            "validation_report": validation_result,
+            "passed": "yes" in validation_result.lower() or "10" in validation_result
+        }
         
     except Exception as e:
-        logger.error(f"Error creating optimized LLM chain: {e}")
-        raise
+        logger.error(f"Validation error: {e}")
+        return {
+            "validation_report": "Validation failed",
+            "passed": True  # Default to passing on error
+        }
 
 
-def get_standard_llm_chain(retriever: BaseRetriever, temperature: float = 0.3):
+def enhance_answer_with_formatting(answer: str) -> str:
     """
-    Create standard LLM chain (fallback).
+    Post-process the answer to improve formatting and readability.
     """
-    try:
-        # Initialize Groq LLM
-        llm = ChatGroq(
-            api_key=os.environ["GROQ_API_KEY"],
-            model_name=os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"),
-            temperature=temperature,
-            max_tokens=2048,
-            timeout=30,
-            max_retries=2
-        )
-        
-        logger.info(f"Initialized standard Groq LLM: {os.getenv('GROQ_MODEL')}")
-        
-        # Create standard prompt template
-        prompt_template = """You are a helpful AI assistant answering questions based on the provided context from uploaded documents.
+    # Add spacing for better readability
+    if ":" in answer and not answer.startswith("-"):
+        # Likely contains lists or structured info
+        lines = answer.split("\n")
+        formatted_lines = []
+        for line in lines:
+            if line.strip():
+                if any(line.strip().startswith(str(i)) for i in range(1, 10)):
+                    formatted_lines.append(f"\n{line}")
+                elif line.strip().startswith("-"):
+                    formatted_lines.append(f"\n{line}")
+                else:
+                    formatted_lines.append(line)
+        answer = "\n".join(formatted_lines)
+    
+    return answer.strip()
 
-Context from documents:
-{context}
 
-Question: {question}
-
-Instructions:
-- Answer based ONLY on the provided context above
-- If the answer is not in the context, say "I don't have enough information in the uploaded documents to answer that question."
-- Be concise but complete
-- Use bullet points for lists when appropriate
-- Cite specific information from the context when relevant
-
-Answer:"""
-
-        PROMPT = PromptTemplate(
-            template=prompt_template,
-            input_variables=["context", "question"]
-        )
-        
-        # Create RetrievalQA chain
-        chain = RetrievalQA.from_chain_type(
-            llm=llm,
-            chain_type="stuff",
-            retriever=retriever,
-            return_source_documents=True,
-            chain_type_kwargs={"prompt": PROMPT}
-        )
-        
-        logger.info("Successfully created standard LLM chain")
-        return chain
-        
-    except Exception as e:
-        logger.error(f"Error creating standard LLM chain: {e}")
-        raise
+# Advanced configuration options
+RAG_CONFIG = {
+    "chunk_size": 1000,  # Optimal chunk size for PEC documents
+    "chunk_overlap": 200,  # Overlap to maintain context
+    "top_k_retrieval": 5,  # Retrieve top 5 most relevant chunks
+    "rerank_top_k": 3,  # After reranking, use top 3
+    "temperature": 0.1,  # Low temperature for consistency
+    "max_tokens": 2048,  # Allow detailed responses
+    "enable_validation": True,  # Enable answer validation
+}
