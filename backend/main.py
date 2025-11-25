@@ -211,7 +211,7 @@ async def ask_question(question: str = Form(...)):
         
         logger.info(f"User query: {question}")
 
-        # Intent routing: handle capability queries separately; allow greetings to go to LLM
+        # Intent routing: handle capability queries separately
         normalized = question.strip().lower()
         capability_intents = [
             "how can you help",
@@ -236,7 +236,6 @@ async def ask_question(question: str = Form(...)):
                 "mode": "capability",
                 "timestamp": datetime.now().isoformat()
             }
-            # Log and return immediately
             log_conversation(
                 question=question,
                 answer=response["answer"],
@@ -245,7 +244,7 @@ async def ask_question(question: str = Form(...)):
             )
             return response
 
-        # Simple small-talk handling: defer to LLM in production, static in mock
+        # Simple small-talk handling
         greeting_patterns = {"hi", "hello", "hey", "good morning", "good evening"}
         if normalized in greeting_patterns or any(normalized.startswith(g + " ") for g in greeting_patterns):
             if USE_MOCK:
@@ -278,6 +277,7 @@ async def ask_question(question: str = Form(...)):
         # If not capability or greeting, use LLM intent classifier to route
         intent = classify_query_with_groq(question) if not USE_MOCK else "rag"
         logger.info(f"Intent classified as: {intent}")
+        
         if intent == "general" and not USE_MOCK:
             try:
                 from langchain_groq import ChatGroq
@@ -301,7 +301,6 @@ async def ask_question(question: str = Form(...)):
                 return result
             except Exception as e:
                 logger.warning(f"General LLM answer failed, will fall back to RAG: {e}")
-                # Continue into RAG flow below
 
         # Mock mode
         if USE_MOCK:
@@ -320,7 +319,6 @@ async def ask_question(question: str = Form(...)):
             }
             logger.info("[MOCK MODE] Returning mock response")
             
-            # Log conversation even in mock mode
             log_conversation(
                 question=question,
                 answer=mock_response["answer"],
@@ -334,18 +332,19 @@ async def ask_question(question: str = Form(...)):
             
             return mock_response
 
-        # PRODUCTION MODE with Optimized Pinecone + Groq
+        # PRODUCTION MODE - Enhanced RAG with direct Pinecone query
         try:
             from langchain_huggingface import HuggingFaceEmbeddings
             from pinecone import Pinecone
-            from modules.optimized_llm import get_optimized_llm_chain
-            from modules.optimized_query_handlers import query_optimized_chain
+            from langchain_groq import ChatGroq
+            from langchain.prompts import ChatPromptTemplate
+            from langchain_core.output_parsers import StrOutputParser
             
-            logger.info("[OPTIMIZED PRODUCTION MODE] Using enhanced RAG system")
+            logger.info("[PRODUCTION MODE] Using enhanced RAG system")
             
-            # Initialize embeddings (same as used for upload)
+            # Initialize embeddings
             embed_model = HuggingFaceEmbeddings(
-                model_name="sentence-transformers/all-MiniLM-L6-v2",  # 384 dimensions
+                model_name="sentence-transformers/all-MiniLM-L6-v2",
                 model_kwargs={'device': 'cpu'},
                 encode_kwargs={'normalize_embeddings': True}
             )
@@ -354,50 +353,114 @@ async def ask_question(question: str = Form(...)):
             pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
             index = pc.Index(os.getenv("PINECONE_INDEX_NAME", "pec-assistant-index"))
             
-            # Create optimized chain (will be used internally by query handler)
-            from langchain_core.retrievers import BaseRetriever
-            from langchain_core.documents import Document
-            from typing import List
+            # Import the optimized query handler
+            from modules.optimized_query_handlers import hybrid_search, rerank_results, format_sources
+            from modules.optimized_llm import preprocess_query, enhance_answer_with_formatting
             
-            class SimpleRetriever(BaseRetriever):
-                """Custom retriever that returns pre-fetched documents."""
-                documents: List[Document] = []
-                
-                def _get_relevant_documents(self, query: str) -> List[Document]:
-                    """Return the stored documents."""
-                    return self.documents
-                
-                async def _aget_relevant_documents(self, query: str) -> List[Document]:
-                    """Async version of get_relevant_documents."""
-                    return self.documents
+            # Step 1: Preprocess query
+            enhanced_query = preprocess_query(question)
+            logger.info(f"Enhanced query: {enhanced_query}")
             
-            dummy_retriever = SimpleRetriever(documents=[])
-            chain = get_optimized_llm_chain(dummy_retriever, temperature=0.3)
+            # Step 2: Hybrid search
+            retrieved_docs = hybrid_search(enhanced_query, embed_model, index, top_k=10)
             
-            # Use optimized query handler with hybrid search and reranking
-            result = query_optimized_chain(chain, question, embed_model, index)
+            if not retrieved_docs:
+                logger.warning("No documents retrieved from Pinecone")
+                return {
+                    "answer": "I couldn't find relevant information in my knowledge base. Please try rephrasing your question or contact PEC directly for assistance.",
+                    "sources": [],
+                    "source_count": 0,
+                    "confidence": 0.0,
+                    "timestamp": datetime.now().isoformat()
+                }
             
-            logger.info("Optimized query successful - Generated enhanced AI response")
+            logger.info(f"Retrieved {len(retrieved_docs)} documents")
             
-            # Add timestamp to result
-            result["timestamp"] = datetime.now().isoformat()
+            # Step 3: Rerank results
+            reranked_docs = rerank_results(enhanced_query, retrieved_docs, top_k=3)
+            logger.info(f"Reranked to top {len(reranked_docs)} documents")
             
-            # Log conversation for future training
+            # Step 4: Prepare context
+            context = "\n\n---\n\n".join([
+                f"[Document {i+1} - Source: {doc['source']}, Page: {doc['page']}]\n{doc['text']}"
+                for i, doc in enumerate(reranked_docs)
+            ])
+            
+            # Step 5: Create enhanced prompt
+            prompt_template = """You are an expert assistant for the Pakistan Engineering Council (PEC). Your role is to provide accurate, helpful information about PEC services, regulations, and procedures.
+
+CRITICAL GUIDELINES:
+1. ONLY answer based on the provided context documents
+2. If information is not in the context, clearly state: "I don't have specific information about that in my knowledge base. Please refer to official PEC documentation or contact PEC directly."
+3. Be specific with numbers, dates, fees, and requirements - never guess
+4. Format responses clearly with bullet points or numbered lists when appropriate
+5. Always cite which section or document your answer comes from when possible
+6. For procedural questions, provide step-by-step instructions
+7. Maintain a professional, helpful tone
+
+CONTEXT FROM PEC DOCUMENTS:
+{context}
+
+USER QUESTION: {question}
+
+DETAILED ANSWER (based strictly on the context above):"""
+
+            prompt = ChatPromptTemplate.from_template(prompt_template)
+            
+            # Step 6: Initialize LLM
+            llm = ChatGroq(
+                api_key=os.environ.get("GROQ_API_KEY"),
+                model_name=os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"),
+                temperature=0.1,  # Low temperature for consistency
+                max_tokens=2048,
+            )
+            
+            # Step 7: Create and run chain
+            chain = prompt | llm | StrOutputParser()
+            
+            answer = chain.invoke({
+                "context": context,
+                "question": enhanced_query
+            })
+            
+            logger.info("Successfully generated answer")
+            
+            # Step 8: Enhance formatting
+            answer = enhance_answer_with_formatting(answer)
+            
+            # Step 9: Quality check
+            from modules.optimized_query_handlers import detect_answer_issues
+            quality_check = detect_answer_issues(answer, context, question)
+            
+            # Step 10: Format response
+            response = {
+                "answer": answer,
+                "sources": format_sources(reranked_docs),
+                "source_count": len(reranked_docs),
+                "confidence": quality_check['confidence'],
+                "quality_issues": quality_check['issues'] if quality_check['has_issues'] else [],
+                "timestamp": datetime.now().isoformat()
+            }
+            
+            logger.info(f"Query completed with confidence: {quality_check['confidence']}")
+            
+            # Log conversation
             log_conversation(
                 question=question,
-                answer=result.get("answer", ""),
-                sources=result.get("sources", []),
+                answer=response["answer"],
+                sources=response["sources"],
                 metadata={
-                    "source_count": result.get("source_count", 0),
-                    "timestamp": result.get("timestamp", ""),
+                    "source_count": response["source_count"],
+                    "confidence": response["confidence"],
+                    "timestamp": response["timestamp"],
                     "mode": "production"
                 }
             )
             
-            return result
+            return response
             
         except ImportError as e:
-            logger.error(f"Missing dependencies for production mode: {e}")
+            logger.error(f"Missing dependencies: {e}")
             raise HTTPException(
                 status_code=500,
                 detail="Production mode requires additional packages. Install: pip install langchain-groq langchain-huggingface sentence-transformers pinecone-client"
@@ -406,7 +469,7 @@ async def ask_question(question: str = Form(...)):
             logger.exception("Error in production mode")
             raise HTTPException(
                 status_code=500,
-                detail=f"Error processing with Groq API: {str(e)}"
+                detail=f"Error processing question: {str(e)}"
             )
 
     except HTTPException:
@@ -414,7 +477,6 @@ async def ask_question(question: str = Form(...)):
     except Exception as e:
         logger.exception("Error processing question")
         raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
-
 
 @app.get("/")
 async def root():
