@@ -189,7 +189,33 @@ def validate_answer(question: str, context: str, answer: str) -> dict:
 def enhance_answer_with_formatting(answer: str) -> str:
     """
     Post-process the answer to improve formatting and readability.
+    Remove unwanted phrases that reference source documents.
     """
+    # Remove common unwanted phrases
+    unwanted_phrases = [
+        r"based on the provided context( documents)?[,\s]*",
+        r"according to (the )?(provided )?(context )?documents?[,\s]*",
+        r"specifically \[document \d+[^\]]*\]( and \[document \d+[^\]]*\])*[,\s]*",
+        r"the (provided )?(context )?documents? (state|mention|indicate|show|reveal)[s]? that[,\s]*",
+        r"from the (context|documents|information provided)[,\s]*",
+        r"in the (given|provided) (context|documents)[,\s]*",
+        r"\[document \d+ - source:?[^\]]*\][,\s]*",
+        r"as (stated|mentioned|indicated) in (the )?(context|documents?)[,\s]*",
+    ]
+    
+    import re
+    for pattern in unwanted_phrases:
+        # Remove the phrase and capitalize the next word
+        answer = re.sub(pattern, "", answer, flags=re.IGNORECASE)
+    
+    # Clean up extra spaces and fix capitalization
+    answer = re.sub(r'\s+', ' ', answer)
+    answer = answer.strip()
+    
+    # Capitalize first letter if needed
+    if answer and answer[0].islower():
+        answer = answer[0].upper() + answer[1:]
+    
     # Add spacing for better readability
     if ":" in answer and not answer.startswith("-"):
         # Likely contains lists or structured info
@@ -199,7 +225,7 @@ def enhance_answer_with_formatting(answer: str) -> str:
             if line.strip():
                 if any(line.strip().startswith(str(i)) for i in range(1, 10)):
                     formatted_lines.append(f"\n{line}")
-                elif line.strip().startswith("-"):
+                elif line.strip().startswith("-") or line.strip().startswith("•"):
                     formatted_lines.append(f"\n{line}")
                 else:
                     formatted_lines.append(line)
